@@ -256,6 +256,210 @@
 
 
 
+# import os
+# from fastapi import FastAPI, HTTPException
+# from pydantic import BaseModel
+# from dotenv import load_dotenv
+# import uuid
+
+# from langchain_community.document_loaders import PyPDFLoader, TextLoader, CSVLoader
+# from langchain_text_splitters import RecursiveCharacterTextSplitter
+# from langchain_chroma import Chroma
+# from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
+
+# # ✅ Load environment variables
+# load_dotenv()
+
+# GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+
+# # ✅ Initialize FastAPI
+# app = FastAPI()
+
+# # ✅ Gemini Embeddings for Vector DB
+# embedding = GoogleGenerativeAIEmbeddings(
+#     model="models/text-embedding-004",
+#     google_api_key=GOOGLE_API_KEY
+# )
+
+# # ✅ Gemini Chat Model (LLM)
+# chat_model = ChatGoogleGenerativeAI(
+#     model="gemini-2.0-flash",
+#     google_api_key=GOOGLE_API_KEY,
+#     temperature=0.3
+# )
+
+# # ✅ Load Knowledge Base Files
+# knowledge_dir = "./knowledge_base"
+# docs = []
+
+# # Check if knowledge_base directory exists
+# if os.path.exists(knowledge_dir):
+#     print("📚 Loading knowledge base files...")
+#     for filename in os.listdir(knowledge_dir):
+#         path = os.path.join(knowledge_dir, filename)
+        
+#         # Skip if it's a directory
+#         if not os.path.isfile(path):
+#             continue
+
+#         try:
+#             if filename.lower().endswith(".pdf"):
+#                 loader = PyPDFLoader(path)
+#                 docs.extend(loader.load())
+#                 print(f"📄 Loaded PDF: {filename}")
+
+#             elif filename.lower().endswith(".txt"):
+#                 loader = TextLoader(path, encoding="utf-8")
+#                 docs.extend(loader.load())
+#                 print(f"📝 Loaded TXT: {filename}")
+
+#             elif filename.lower().endswith(".csv"):
+#                 loader = CSVLoader(path)
+#                 docs.extend(loader.load())
+#                 print(f"📊 Loaded CSV: {filename}")
+#         except Exception as e:
+#             print(f"❌ Error loading {filename}: {str(e)}")
+# else:
+#     print(f"⚠️ Knowledge base directory '{knowledge_dir}' not found. Creating empty vector store.")
+
+# print(f"✅ Total docs loaded: {len(docs)}")
+
+# # ✅ Initialize vector stores
+# if docs:
+#     # Split documents
+#     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+#     texts = text_splitter.split_documents(docs)
+#     print(f"✅ Total chunks created: {len(texts)}")
+
+#     # Create or load knowledge base vector store
+#     kb_vectorstore = Chroma.from_documents(
+#         documents=texts,
+#         embedding=embedding,
+#         persist_directory="./reva_realestate_kb"
+#     )
+# else:
+#     # Create empty vector store if no documents
+#     kb_vectorstore = Chroma(
+#         persist_directory="./reva_realestate_kb",
+#         embedding_function=embedding
+#     )
+#     print("⚠️ No documents found. Using empty knowledge base.")
+
+# # Create or load memory vector store
+# memory_vectorstore = Chroma(
+#     persist_directory="./reva_chat_memory",
+#     embedding_function=embedding
+# )
+
+# # ✅ API Request/Response Models
+# class ChatRequest(BaseModel):
+#     message: str
+#     session_id: str = None
+#     history: list = []
+
+# class ChatResponse(BaseModel):
+#     reply: str
+#     session_id: str
+
+# @app.post("/chat", response_model=ChatResponse)
+# def chat(request: ChatRequest):
+#     session_id = request.session_id or str(uuid.uuid4())
+
+#     # Retrieve relevant context from knowledge base
+#     kb_docs = kb_vectorstore.similarity_search(request.message, k=3)
+#     kb_context = "\n\n".join(doc.page_content for doc in kb_docs) if kb_docs else "No relevant information found."
+
+#     # Retrieve relevant context from memory
+#     memory_docs = memory_vectorstore.similarity_search(request.message, k=3)
+#     memory_context = "\n\n".join(doc.page_content for doc in memory_docs) if memory_docs else "No previous conversation history."
+
+#     # Build prompt — NOTE the leading f to allow {} interpolation
+#     system_prompt = f"""Role & Personality
+# You are REVA (Real Estate Virtual Assistant) — an intelligent, friendly, and professional AI sales assistant for a real estate company.
+# Your goal is to qualify leads, understand their needs, build trust, and guide them toward booking a property consultation or site visit.
+# You always sound human, polite, and confident. You use conversational tone and sales psychology subtly.
+
+# Primary Objectives
+# Engage the lead with a warm, natural tone that feels like chatting with a helpful agent.
+# Understand their property needs: type, location, budget, urgency, and purpose (investment, living, rental).
+# Qualify the lead using contextual reasoning and data-driven logic. Score the lead internally and pass the result to the CRM / sheet.
+
+# Knowledge Base:
+# {kb_context}
+
+# Past Conversation Memory:
+# {memory_context}
+
+# User: {request.message}
+
+# Answer:
+# """
+
+#     # Call the Gemini chat model (wrap in try/except for safety)
+#     try:
+#         response = chat_model.invoke(system_prompt)
+#     except Exception as e:
+#         # Log and return a 500 so client sees a helpful error
+#         print(f"❌ Model invocation error: {e}")
+#         raise HTTPException(status_code=500, detail="Model invocation failed")
+
+#     # Robust extraction of the reply (handles multiple possible response shapes)
+#     reply = ""
+#     try:
+#         # Case A: response has `.content` attribute
+#         if hasattr(response, "content"):
+#             content = response.content
+#             if isinstance(content, str):
+#                 reply = content
+#             elif isinstance(content, list):
+#                 # list of parts (dicts or strings)
+#                 parts = []
+#                 for part in content:
+#                     if isinstance(part, dict):
+#                         # common key names: 'text' or 'content' or 'output'
+#                         parts.append(part.get("text") or part.get("content") or "")
+#                     else:
+#                         parts.append(str(part))
+#                 reply = "".join(parts)
+#             else:
+#                 # fallback to str()
+#                 reply = str(content)
+
+#         # Case B: response is dict-like
+#         elif isinstance(response, dict):
+#             # try typical keys
+#             reply = response.get("output", "") or response.get("content", "") or response.get("text", "")
+#             # sometimes nested candidates
+#             if not reply:
+#                 candidates = response.get("candidates") or response.get("choices")
+#                 if isinstance(candidates, list) and candidates:
+#                     first = candidates[0]
+#                     if isinstance(first, dict):
+#                         reply = first.get("content") or first.get("text") or ""
+#                     else:
+#                         reply = str(first)
+
+#         # Case C: direct string
+#         else:
+#             reply = str(response)
+#     except Exception as e:
+#         print(f"⚠️ Error extracting reply: {e}")
+#         reply = ""
+
+#     reply = (reply or "").strip()
+
+#     # Store conversation in memory (avoid storing trivial bot intros)
+#     try:
+#         if reply and "I'm REVA" not in reply and "I’m REVA" not in reply:
+#             memory_text = f"User: {request.message}\nREVA: {reply}"
+#             memory_vectorstore.add_texts([memory_text])
+#     except Exception as e:
+#         print(f"⚠️ Error storing memory: {str(e)}")
+
+#     return ChatResponse(reply=reply or "Sorry, I couldn't generate a reply right now.", session_id=session_id)
+
+
+
 import os
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -274,6 +478,14 @@ GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
 # ✅ Initialize FastAPI
 app = FastAPI()
+
+# ✅ Health check or browser test endpoint
+@app.get("/")
+def root():
+    return {
+        "message": "🚀 REVA Chat API is running successfully!",
+        "instructions": "Send a POST request to this same URL with JSON body {'message': 'Hi'} to chat."
+    }
 
 # ✅ Gemini Embeddings for Vector DB
 embedding = GoogleGenerativeAIEmbeddings(
@@ -361,7 +573,7 @@ class ChatResponse(BaseModel):
     reply: str
     session_id: str
 
-@app.post("/chat", response_model=ChatResponse)
+@app.post("/", response_model=ChatResponse)
 def chat(request: ChatRequest):
     session_id = request.session_id or str(uuid.uuid4())
 
@@ -373,7 +585,7 @@ def chat(request: ChatRequest):
     memory_docs = memory_vectorstore.similarity_search(request.message, k=3)
     memory_context = "\n\n".join(doc.page_content for doc in memory_docs) if memory_docs else "No previous conversation history."
 
-    # Build prompt — NOTE the leading f to allow {} interpolation
+    # Build prompt
     system_prompt = f"""Role & Personality
 You are REVA (Real Estate Virtual Assistant) — an intelligent, friendly, and professional AI sales assistant for a real estate company.
 Your goal is to qualify leads, understand their needs, build trust, and guide them toward booking a property consultation or site visit.
@@ -395,41 +607,31 @@ User: {request.message}
 Answer:
 """
 
-    # Call the Gemini chat model (wrap in try/except for safety)
+    # Call the Gemini chat model
     try:
         response = chat_model.invoke(system_prompt)
     except Exception as e:
-        # Log and return a 500 so client sees a helpful error
         print(f"❌ Model invocation error: {e}")
         raise HTTPException(status_code=500, detail="Model invocation failed")
 
-    # Robust extraction of the reply (handles multiple possible response shapes)
     reply = ""
     try:
-        # Case A: response has `.content` attribute
         if hasattr(response, "content"):
             content = response.content
             if isinstance(content, str):
                 reply = content
             elif isinstance(content, list):
-                # list of parts (dicts or strings)
                 parts = []
                 for part in content:
                     if isinstance(part, dict):
-                        # common key names: 'text' or 'content' or 'output'
                         parts.append(part.get("text") or part.get("content") or "")
                     else:
                         parts.append(str(part))
                 reply = "".join(parts)
             else:
-                # fallback to str()
                 reply = str(content)
-
-        # Case B: response is dict-like
         elif isinstance(response, dict):
-            # try typical keys
             reply = response.get("output", "") or response.get("content", "") or response.get("text", "")
-            # sometimes nested candidates
             if not reply:
                 candidates = response.get("candidates") or response.get("choices")
                 if isinstance(candidates, list) and candidates:
@@ -438,8 +640,6 @@ Answer:
                         reply = first.get("content") or first.get("text") or ""
                     else:
                         reply = str(first)
-
-        # Case C: direct string
         else:
             reply = str(response)
     except Exception as e:
@@ -448,7 +648,6 @@ Answer:
 
     reply = (reply or "").strip()
 
-    # Store conversation in memory (avoid storing trivial bot intros)
     try:
         if reply and "I'm REVA" not in reply and "I’m REVA" not in reply:
             memory_text = f"User: {request.message}\nREVA: {reply}"
